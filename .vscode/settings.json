@@ -1,0 +1,11 @@
+{
+    "cSpell.ignoreWords": [
+        "json",
+        "serde",
+        "serde json",
+        "structopt"
+    ],
+    "cSpell.words": [
+        "newkey"
+    ]
+}
