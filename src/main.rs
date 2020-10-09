@@ -62,10 +62,13 @@ fn rename(key: String, new_key: String) -> std::io::Result<String> {
 
 fn exists(key: String) -> std::io::Result<String> {
     let map: HashMap<String, String> = load_keys()?;
-    let value = map.get(&key);
-    match value {
-        Some(_value) => Ok("Exists".to_string()),
-        None => Ok("Key not found".to_string()),
+
+    let exists = map.keys().filter(|&x| x == &key).collect::<Vec<_>>().len();
+
+    if exists > 0 {
+        Ok("Exists".to_string())
+    } else {
+        Ok("Key not found".to_string())
     }
 }
 
