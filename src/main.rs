@@ -1,6 +1,5 @@
 use regex::Regex;
 use serde_json::Value;
-use std::collections::hash_map::Keys;
 use std::collections::HashMap;
 use std::io::Read;
 use structopt::StructOpt;
@@ -48,13 +47,12 @@ fn append(key: String, value: String) -> std::io::Result<String> {
 
 fn rename(key: String, new_key: String) -> std::io::Result<String> {
     let mut map: HashMap<String, String> = load_keys()?;
-    let value = map.get(&key);
+    let value = map.remove(&key);
     match value {
         Some(v) => {
             //TODO: Not sure if result is correct approach.
             let result = format!("Renamed key {} with new key {}", &key, &new_key);
             map.insert(new_key, v.to_string());
-            map.remove(&key);
             write_keys(map)?;
             Ok(result)
         }
