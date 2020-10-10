@@ -1,8 +1,10 @@
+use anyhow::{Result};
 use regex::Regex;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::io::Read;
 use structopt::StructOpt;
+use thiserror::Error;
 
 fn main() {
     let opt = Opt::from_args();
@@ -17,11 +19,14 @@ fn main() {
         Command::Append { key, value } => append(key, value),
         Command::Keys { pattern } => get_keys(pattern),
     };
-    println!("{:?}", value.unwrap());
+    match value {
+        Ok(value) => println!("{:?}", value),
+        Err(value) => eprintln!("{:?}", value)
+    }
 }
 
-fn get_keys(pattern: String) -> std::io::Result<String> {
-    let map: HashMap<String, String> = load_keys()?;
+fn get_keys(pattern: String) -> Result<String, KVError> {
+    let map = load_keys()?;
     let regex = Regex::new(&pattern).unwrap();
     let keys = map
         .keys()
@@ -32,8 +37,8 @@ fn get_keys(pattern: String) -> std::io::Result<String> {
     Ok(format!("Keys : {}", keys))
 }
 
-fn append(key: String, value: String) -> std::io::Result<String> {
-    let mut map: HashMap<String, String> = load_keys()?;
+fn append(key: String, value: String) -> Result<String, KVError> {
+    let mut map = load_keys()?;
     let result = map.get_mut(&key);
     match result {
         Some(v) => {
@@ -41,86 +46,89 @@ fn append(key: String, value: String) -> std::io::Result<String> {
             write_keys(map)?;
             Ok("Success".to_string())
         }
-        None => Ok("Key not found".to_string()),
+        None => Err(KVError::KeyNotFound(key)),
     }
 }
 
-fn rename(key: String, new_key: String) -> std::io::Result<String> {
-    let mut map: HashMap<String, String> = load_keys()?;
+fn rename(key: String, new_key: String) -> Result<String, KVError> {
+    let mut map = load_keys()?;
     let value = map.remove(&key);
     match value {
         Some(v) => {
             //TODO: Not sure if result is correct approach.
             let result = format!("Renamed key {} with new key {}", &key, &new_key);
-            map.insert(new_key, v.to_string());
+            map.insert(new_key, v);
             write_keys(map)?;
             Ok(result)
         }
-        None => Ok("Key not found".to_string()),
+        None => Err(KVError::KeyNotFound(key)),
     }
 }
 
-fn exists(key: String) -> std::io::Result<String> {
-    let map: HashMap<String, String> = load_keys()?;
+fn exists(key: String) -> Result<String, KVError> {
+    let map = load_keys()?;
 
-    let exists = map.keys().filter(|&x| x == &key).collect::<Vec<_>>().len();
-
-    if exists > 0 {
+    if map.contains_key(&key) {
         Ok("Exists".to_string())
     } else {
-        Ok("Key not found".to_string())
+        Err(KVError::KeyNotFound(key))
     }
 }
 
-fn delete(key: String) -> std::io::Result<String> {
-    let mut map: HashMap<String, String> = load_keys()?;
+fn delete(key: String) -> Result<String, KVError> {
+    let mut map = load_keys()?;
     let value = map.remove(&key);
     match value {
         Some(value) => {
             write_keys(map)?;
             Ok(format!("Deleted key {} with value {}", &key, &value))
         }
-        None => Ok("Key not found".to_string()),
+        None => Err(KVError::KeyNotFound(key)),
     }
 }
 
-fn flush_all() -> std::io::Result<String> {
+fn flush_all() -> Result<String, KVError> {
     std::fs::write("kv.db", "{}".to_string())?;
     Ok("Successfully flushed everything!".to_string())
 }
 
-fn get(key: String) -> std::io::Result<String> {
-    let map: HashMap<String, String> = load_keys()?;
+fn get(key: String) -> Result<String, KVError> {
+    let map = load_keys()?;
     let value = map.get(&key);
     //value.ok_or(("Key not found!"))
     match value {
         Some(value) => Ok(value.to_string()),
-        None => Ok("Key not found".to_string()),
+        None => Err(KVError::KeyNotFound(key)),
     }
 }
 
-fn set(key: String, value: String) -> std::io::Result<String> {
+fn set(key: String, value: String) -> Result<String, KVError> {
     let mut map = load_keys()?;
     map.insert(key, value);
     write_keys(map)?;
     Ok("Success".to_string())
 }
 
-fn write_keys(map: HashMap<String, String>) -> std::io::Result<()> {
+fn write_keys(map: HashMap<String, String>) -> Result<(), KVError> {
     let json_string = serde_json::to_string(&map)?;
     std::fs::write("kv.db", json_string)?;
     Ok(())
 }
 
-fn load_keys() -> std::io::Result<HashMap<String, String>> {
+fn load_keys() -> Result<HashMap<String, String>, KVError> {
     let mut file = match std::fs::File::open("kv.db") {
         Ok(file) => file,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => std::fs::File::create("kv.db")?,
-        Err(e) => return Err(e),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => std::fs::File::create("kv.db")
+            .map_err(|source| KVError::WriteError {
+                source: source,
+                file: "kv.db".to_string(),
+            })?,
+        Err(e) => return Err(KVError::GenericError(e)),
     };
     let mut contents = String::new();
 
-    file.read_to_string(&mut contents)?;
+    file.read_to_string(&mut contents)
+        .map_err(|source| KVError::ReadError { source })?;
 
     if contents.is_empty() {
         contents.push_str("{}");
@@ -133,13 +141,43 @@ fn load_keys() -> std::io::Result<HashMap<String, String>> {
             for (k, v) in map {
                 match v {
                     Value::String(string) => db.insert(k, string),
-                    _ => panic!("Unable to map the db"),
+                    _ => return Err(KVError::UnableToMap),
                 };
             }
             Ok(db)
         }
-        _ => panic!("Corrupt database"),
+        _ => return Err(KVError::CorruptDatabase),
     }
+}
+
+#[derive(Debug, Error)]
+enum KVError {
+    #[error("Unable to map the db")]
+    UnableToMap,
+
+    #[error("Corrupt database")]
+    CorruptDatabase,
+
+    #[error("Failed to create file {file}")]
+    WriteError {
+        source: std::io::Error,
+        file: String,
+    },
+
+    #[error("Failed to read the content")]
+    ReadError { source: std::io::Error },
+
+    #[error(transparent)]
+    IOError(#[from] std::io::Error),
+
+    #[error("Failed to read JSON data")]
+    DeserializationError(#[from] serde_json::Error),
+
+    #[error("An error occurred {0}")]
+    GenericError(std::io::Error),
+
+    #[error("Key not found {0}")]
+    KeyNotFound(String)
 }
 
 #[derive(Debug, StructOpt)]
