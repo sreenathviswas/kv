@@ -6,6 +6,9 @@
         "structopt"
     ],
     "cSpell.words": [
-        "newkey"
+        "Deserialization",
+        "bson",
+        "newkey",
+        "thiserror"
     ]
 }

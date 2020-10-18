@@ -1,172 +1,56 @@
 use anyhow::{Result};
 use regex::Regex;
-use serde_json::Value;
+//use serde_json::Value;
 use std::collections::HashMap;
-use std::io::Read;
+//use std::io::Read;
 use structopt::StructOpt;
 use thiserror::Error;
 
-fn main() {
+fn main() -> Result<()> {
     let opt = Opt::from_args();
+    let store = KV::new(BsonBackendStorage::new());
     //println!("{:?}", opt.command);
     let value = match opt.command {
-        Command::Get { key } => get(key),
-        Command::Set { key, value } => set(key, value),
-        Command::FlushAll => flush_all(),
-        Command::Del { key } => delete(key),
-        Command::Exists { key } => exists(key),
-        Command::Rename { key, newkey } => rename(key, newkey),
-        Command::Append { key, value } => append(key, value),
-        Command::Keys { pattern } => get_keys(pattern),
+        Command::Get { key } => store.get(key)?,
+        Command::Set { key, value } => {
+            store.set(key, value)?;
+            "OK".into()
+        },
+        Command::FlushAll => {
+            store.flush_all()?;
+            "OK".into()
+        },
+        Command::Del { key } => {
+            store.delete(key)?;
+            "OK".into()
+        },
+        Command::Exists { key } => {
+            if store.exists(key)?{
+                "OK".into()
+            }
+            else{
+                "Not exists".into()
+            }
+        },
+        Command::Rename { key, newkey } => {
+            store.rename(key, newkey)?;
+            "OK".into()
+        }
+        Command::Append { key, value } => {
+            store.append(key, value)?;
+            "OK".into()
+        },
+        Command::Keys { pattern } => {
+            let keys = store.get_keys(pattern)?;
+            format!("Keys : {}", keys.join(", "))
+        }
     };
-    match value {
-        Ok(value) => println!("{:?}", value),
-        Err(value) => eprintln!("{:?}", value)
-    }
-}
-
-fn get_keys(pattern: String) -> Result<String, KVError> {
-    let map = load_keys()?;
-    let regex = Regex::new(&pattern).unwrap();
-    let keys = map
-        .keys()
-        .filter(|&x| regex.is_match(x))
-        .map(|k| &**k)
-        .collect::<Vec<_>>()
-        .join(", ");
-    Ok(format!("Keys : {}", keys))
-}
-
-fn append(key: String, value: String) -> Result<String, KVError> {
-    let mut map = load_keys()?;
-    let result = map.get_mut(&key);
-    match result {
-        Some(v) => {
-            *v = format!("{}{}", v, value);
-            write_keys(map)?;
-            Ok("Success".to_string())
-        }
-        None => Err(KVError::KeyNotFound(key)),
-    }
-}
-
-fn rename(key: String, new_key: String) -> Result<String, KVError> {
-    let mut map = load_keys()?;
-    let value = map.remove(&key);
-    match value {
-        Some(v) => {
-            //TODO: Not sure if result is correct approach.
-            let result = format!("Renamed key {} with new key {}", &key, &new_key);
-            map.insert(new_key, v);
-            write_keys(map)?;
-            Ok(result)
-        }
-        None => Err(KVError::KeyNotFound(key)),
-    }
-}
-
-fn exists(key: String) -> Result<String, KVError> {
-    let map = load_keys()?;
-
-    if map.contains_key(&key) {
-        Ok("Exists".to_string())
-    } else {
-        Err(KVError::KeyNotFound(key))
-    }
-}
-
-fn delete(key: String) -> Result<String, KVError> {
-    let mut map = load_keys()?;
-    let value = map.remove(&key);
-    match value {
-        Some(value) => {
-            write_keys(map)?;
-            Ok(format!("Deleted key {} with value {}", &key, &value))
-        }
-        None => Err(KVError::KeyNotFound(key)),
-    }
-}
-
-fn flush_all() -> Result<String, KVError> {
-    std::fs::write("kv.db", "{}".to_string())?;
-    Ok("Successfully flushed everything!".to_string())
-}
-
-fn get(key: String) -> Result<String, KVError> {
-    let map = load_keys()?;
-    let value = map.get(&key);
-    //value.ok_or(("Key not found!"))
-    match value {
-        Some(value) => Ok(value.to_string()),
-        None => Err(KVError::KeyNotFound(key)),
-    }
-}
-
-fn set(key: String, value: String) -> Result<String, KVError> {
-    let mut map = load_keys()?;
-    map.insert(key, value);
-    write_keys(map)?;
-    Ok("Success".to_string())
-}
-
-fn write_keys(map: HashMap<String, String>) -> Result<(), KVError> {
-    let json_string = serde_json::to_string(&map)?;
-    std::fs::write("kv.db", json_string)?;
+    println!("{:?}", value);
     Ok(())
 }
 
-fn load_keys() -> Result<HashMap<String, String>, KVError> {
-    let mut file = match std::fs::File::open("kv.db") {
-        Ok(file) => file,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => std::fs::File::create("kv.db")
-            .map_err(|source| KVError::WriteError {
-                source: source,
-                file: "kv.db".to_string(),
-            })?,
-        Err(e) => return Err(KVError::GenericError(e)),
-    };
-    let mut contents = String::new();
-
-    file.read_to_string(&mut contents)
-        .map_err(|source| KVError::ReadError { source })?;
-
-    if contents.is_empty() {
-        contents.push_str("{}");
-    }
-
-    let json: Value = serde_json::from_str(&contents)?;
-    match json {
-        Value::Object(map) => {
-            let mut db = HashMap::new();
-            for (k, v) in map {
-                match v {
-                    Value::String(string) => db.insert(k, string),
-                    _ => return Err(KVError::UnableToMap),
-                };
-            }
-            Ok(db)
-        }
-        _ => return Err(KVError::CorruptDatabase),
-    }
-}
-
 #[derive(Debug, Error)]
-enum KVError {
-    #[error("Unable to map the db")]
-    UnableToMap,
-
-    #[error("Corrupt database")]
-    CorruptDatabase,
-
-    #[error("Failed to create file {file}")]
-    WriteError {
-        source: std::io::Error,
-        file: String,
-    },
-
-    #[error("Failed to read the content")]
-    ReadError { source: std::io::Error },
-
+pub enum KVError {
     #[error(transparent)]
     IOError(#[from] std::io::Error),
 
@@ -177,7 +61,13 @@ enum KVError {
     GenericError(std::io::Error),
 
     #[error("Key not found {0}")]
-    KeyNotFound(String)
+    KeyNotFound(String),
+
+    #[error("Failed to read BSON data")]
+    DeserializeError(#[from] bson::de::Error),
+
+    #[error("Failed to write BSON data")]
+    SerializeError(#[from] bson::ser::Error),
 }
 
 #[derive(Debug, StructOpt)]
@@ -227,5 +117,188 @@ enum Command {
     Keys {
         #[structopt(short = "p", long = "pattern")]
         pattern: String,
-    },
+    }
+}
+
+pub trait BackendStorage{
+    fn load_keys(&self) -> Result<HashMap<String, String>, KVError>;
+    fn write_keys(&self, map: HashMap<String, String>) -> Result<(), KVError>; 
+}
+
+pub struct  JsonBackendStorage{
+
+}
+
+impl JsonBackendStorage {
+    fn new()-> Self{
+        Self{}
+    }
+}
+
+impl BackendStorage for JsonBackendStorage {
+    fn load_keys(&self) -> Result<HashMap<String, String>, KVError> {
+        let file = match std::fs::File::open("kv.db") {
+            Ok(file) => file,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
+            Err(e) => return Err(KVError::GenericError(e)),
+        };
+        let reader = std::io::BufReader::new(file);
+        let map = serde_json::from_reader(reader)?;
+        Ok(map)
+    }
+
+    fn write_keys(&self, map: HashMap<String, String>) -> Result<(), KVError> {
+        let json_string = serde_json::to_string(&map)?;
+        std::fs::write("kv.db", json_string)?;
+        Ok(())
+    }
+}
+
+pub struct BsonBackendStorage{
+
+}
+
+impl BsonBackendStorage {
+    fn new() -> Self{
+        Self{}
+    }
+}
+
+impl BackendStorage for BsonBackendStorage{
+    fn load_keys(&self) -> Result<HashMap<String, String>, KVError> {
+        let file = match std::fs::File::open("kv.bson") {
+            Ok(file) => file,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
+            Err(e) => return Err(KVError::GenericError(e)),
+        };
+        let mut reader = std::io::BufReader::new(file);
+        let document = bson::document::Document::from_reader(&mut reader)?;
+        let map = bson::from_bson(document.into())?;
+        Ok(map)
+    }
+
+    fn write_keys(&self, map: HashMap<String, String>) -> Result<(), KVError> {
+        let bson = bson::to_bson(&map)?;
+        // std::fs::write("kv.bson", bson)?;
+        Ok(())
+    }
+}
+
+pub struct KV<T:BackendStorage> {
+    pub storage: T
+}
+
+impl<T> KV<T> 
+where 
+    T: BackendStorage, 
+{
+    fn new(storage: T) -> Self{
+        Self{
+            storage
+        }
+    }
+
+    fn get_keys(&self, pattern: String) -> Result<Vec<String>, KVError> {
+        let map = self.storage.load_keys()?;
+        let regex = Regex::new(&pattern).unwrap();
+        let keys = map
+            .keys()
+            .filter(|&x| regex.is_match(x))
+            .map(|k| &**k)
+            .map(String::from)
+            .collect::<Vec<_>>();
+        Ok(keys)
+    }
+
+    fn append(&self, key: String, value: String) -> Result<(), KVError> {
+        let mut map = self.storage.load_keys()?;
+        let result = map.get_mut(&key);
+        match result {
+            Some(v) => {
+                *v = format!("{}{}", v, value);
+                self.storage.write_keys(map)?;
+                Ok(())
+            }
+            None => Err(KVError::KeyNotFound(key)),
+        }
+    }
+
+    fn rename(&self, key: String, new_key: String) -> Result<(), KVError> {
+        let mut map = self.storage.load_keys()?;
+        let value = map.remove(&key);
+        match value {
+            Some(v) => {
+                map.insert(new_key, v);
+                self.storage.write_keys(map)?;
+                Ok(())
+            }
+            None => Err(KVError::KeyNotFound(key)),
+        }
+    }
+    
+    fn exists(&self, key: String) -> Result<bool, KVError> {
+        let map = self.storage.load_keys()?;
+        Ok(map.contains_key(&key))
+    }
+    
+    fn delete(&self, key: String) -> Result<(), KVError> {
+        let mut map = self.storage.load_keys()?;
+        let value = map.remove(&key);
+        match value {
+            Some(_value) => {
+                self.storage.write_keys(map)?;
+                Ok(())
+            }
+            None => Err(KVError::KeyNotFound(key)),
+        }
+    }
+    
+    fn flush_all(&self) -> Result<(), KVError> {
+        std::fs::write("kv.db", "{}".to_string())?;
+        Ok(())
+    }
+    
+    fn get(&self, key: String) -> Result<String, KVError> {
+        let map = self.storage.load_keys()?;
+        let value = map.get(&key);
+        //value.ok_or(Err(KVError::KeyNotFound(key)))
+        match value {
+            Some(value) => Ok(value.into()),
+            None => Err(KVError::KeyNotFound(key)),
+        }
+    }
+    
+    fn set(&self, key: String, value: String) -> Result<(), KVError> {
+        let mut map = self.storage.load_keys()?;
+        map.insert(key, value);
+        self.storage.write_keys(map)?;
+        Ok(())
+    }
+
+
+    //#[test]
+    // fn get_keys_returns_keys(){
+    //     flush_all().unwrap();
+    //     set("Abc".to_string(), "Abc".to_string()).unwrap();
+    //     set("Abi".to_string(), "Abi".to_string()).unwrap();
+    //     set("Xyz".to_string(), "Xyz".to_string()).unwrap();
+
+    //     let keys = get_keys("Abc".to_string());
+
+    //     match keys {
+    //         Ok(value) => assert!(value.len() > 0),
+    //         Err(_e) => panic!("get keys test failed")
+    //     }
+    // }
+
+    // #[test]
+    // fn append_returns_error_on_key_not_found(){
+    //     let keys = append("123".to_string(), "append".to_string());
+
+    //     match keys {
+    //         Ok(_value) => panic!("Should not reach here"),
+    //         Err(_e) => assert!(true)
+    //     }
+    // }
+    
 }
