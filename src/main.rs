@@ -1,37 +1,47 @@
-use anyhow::{Result};
+use anyhow::Result;
 use regex::Regex;
-//use serde_json::Value;
 use std::collections::HashMap;
-//use std::io::Read;
 use structopt::StructOpt;
 use thiserror::Error;
 
 fn main() -> Result<()> {
     let opt = Opt::from_args();
-    let store = KV::new(BsonBackendStorage::new());
+    let store = KV::new(JsonBackendStorage);
     //println!("{:?}", opt.command);
     let value = match opt.command {
-        Command::Get { key } => store.get(key)?,
+        Command::Get { key , serializer} => {
+            //let store = KV::new(serializer);
+            match serializer {
+                Serializer::BsonBackendStorage => {
+                    let store = KV::new(BsonBackendStorage);
+                    store.get(key)?
+                },
+                Serializer::JsonBackendStorage => {
+                    let store = KV::new(JsonBackendStorage);
+                    store.get(key)?
+                }
+            }
+            
+        },
         Command::Set { key, value } => {
             store.set(key, value)?;
             "OK".into()
-        },
-        Command::FlushAll => {
-            store.flush_all()?;
+        }
+        Command::Clear => {
+            store.clear()?;
             "OK".into()
-        },
+        }
         Command::Del { key } => {
             store.delete(key)?;
             "OK".into()
-        },
+        }
         Command::Exists { key } => {
-            if store.exists(key)?{
+            if store.exists(key)? {
                 "OK".into()
-            }
-            else{
+            } else {
                 "Not exists".into()
             }
-        },
+        }
         Command::Rename { key, newkey } => {
             store.rename(key, newkey)?;
             "OK".into()
@@ -39,7 +49,7 @@ fn main() -> Result<()> {
         Command::Append { key, value } => {
             store.append(key, value)?;
             "OK".into()
-        },
+        }
         Command::Keys { pattern } => {
             let keys = store.get_keys(pattern)?;
             format!("Keys : {}", keys.join(", "))
@@ -71,6 +81,23 @@ pub enum KVError {
 }
 
 #[derive(Debug, StructOpt)]
+enum Serializer {
+    JsonBackendStorage,
+    BsonBackendStorage
+}
+
+impl std::str::FromStr for Serializer{
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s{
+            "Json" => Ok(Serializer::JsonBackendStorage),
+            "Bson" => Ok(Serializer::BsonBackendStorage),
+            _ => Err("Serializer must be either Json or Bson".to_string())
+        }
+    }
+}
+
+#[derive(Debug, StructOpt)]
 #[structopt(name = "KV", about = "A key value store")]
 struct Opt {
     #[structopt(subcommand)]
@@ -83,6 +110,9 @@ enum Command {
     Get {
         #[structopt(short = "k", long = "key")]
         key: String,
+
+        #[structopt(short = "s", long = "serializer", default_value = "Bson")]
+        serializer: Serializer
     },
     Set {
         #[structopt(short = "k", long = "key")]
@@ -91,7 +121,7 @@ enum Command {
         #[structopt(short = "v", long = "value")]
         value: String,
     },
-    FlushAll,
+    Clear,
     Del {
         #[structopt(short = "k", long = "key")]
         key: String,
@@ -117,23 +147,16 @@ enum Command {
     Keys {
         #[structopt(short = "p", long = "pattern")]
         pattern: String,
-    }
+    },
 }
 
-pub trait BackendStorage{
+pub trait BackendStorage {
     fn load_keys(&self) -> Result<HashMap<String, String>, KVError>;
-    fn write_keys(&self, map: HashMap<String, String>) -> Result<(), KVError>; 
+    fn write_keys(&self, map: HashMap<String, String>) -> Result<(), KVError>;
+    fn clear(&self) -> Result<(), KVError>;
 }
 
-pub struct  JsonBackendStorage{
-
-}
-
-impl JsonBackendStorage {
-    fn new()-> Self{
-        Self{}
-    }
-}
+pub struct JsonBackendStorage;
 
 impl BackendStorage for JsonBackendStorage {
     fn load_keys(&self) -> Result<HashMap<String, String>, KVError> {
@@ -152,19 +175,16 @@ impl BackendStorage for JsonBackendStorage {
         std::fs::write("kv.db", json_string)?;
         Ok(())
     }
-}
 
-pub struct BsonBackendStorage{
-
-}
-
-impl BsonBackendStorage {
-    fn new() -> Self{
-        Self{}
+    fn clear(&self) -> Result<(), KVError> {
+        std::fs::write("kv.db", "{}".to_string())?;
+        Ok(())
     }
 }
 
-impl BackendStorage for BsonBackendStorage{
+pub struct BsonBackendStorage;
+
+impl BackendStorage for BsonBackendStorage {
     fn load_keys(&self) -> Result<HashMap<String, String>, KVError> {
         let file = match std::fs::File::open("kv.bson") {
             Ok(file) => file,
@@ -178,24 +198,29 @@ impl BackendStorage for BsonBackendStorage{
     }
 
     fn write_keys(&self, map: HashMap<String, String>) -> Result<(), KVError> {
-        let bson = bson::to_bson(&map)?;
-        // std::fs::write("kv.bson", bson)?;
+        let bson = bson::to_document(&map)?;
+        let file = std::fs::File::create("kv.bson")?;
+        let mut buffer = std::io::BufWriter::new(file);
+        bson.to_writer(&mut buffer)?;
+        Ok(())
+    }
+
+    fn clear(&self) -> Result<(), KVError> {
+        std::fs::remove_file("kv.bson")?;
         Ok(())
     }
 }
 
-pub struct KV<T:BackendStorage> {
-    pub storage: T
+pub struct KV<T: BackendStorage> {
+    pub storage: T,
 }
 
-impl<T> KV<T> 
-where 
-    T: BackendStorage, 
+impl<T> KV<T>
+where
+    T: BackendStorage,
 {
-    fn new(storage: T) -> Self{
-        Self{
-            storage
-        }
+    fn new(storage: T) -> Self {
+        Self { storage }
     }
 
     fn get_keys(&self, pattern: String) -> Result<Vec<String>, KVError> {
@@ -235,12 +260,12 @@ where
             None => Err(KVError::KeyNotFound(key)),
         }
     }
-    
+
     fn exists(&self, key: String) -> Result<bool, KVError> {
         let map = self.storage.load_keys()?;
         Ok(map.contains_key(&key))
     }
-    
+
     fn delete(&self, key: String) -> Result<(), KVError> {
         let mut map = self.storage.load_keys()?;
         let value = map.remove(&key);
@@ -252,12 +277,11 @@ where
             None => Err(KVError::KeyNotFound(key)),
         }
     }
-    
-    fn flush_all(&self) -> Result<(), KVError> {
-        std::fs::write("kv.db", "{}".to_string())?;
-        Ok(())
+
+    fn clear(&self) -> Result<(), KVError> {
+        self.storage.clear()
     }
-    
+
     fn get(&self, key: String) -> Result<String, KVError> {
         let map = self.storage.load_keys()?;
         let value = map.get(&key);
@@ -267,14 +291,13 @@ where
             None => Err(KVError::KeyNotFound(key)),
         }
     }
-    
+
     fn set(&self, key: String, value: String) -> Result<(), KVError> {
         let mut map = self.storage.load_keys()?;
         map.insert(key, value);
         self.storage.write_keys(map)?;
         Ok(())
     }
-
 
     //#[test]
     // fn get_keys_returns_keys(){
@@ -300,5 +323,4 @@ where
     //         Err(_e) => assert!(true)
     //     }
     // }
-    
 }
