@@ -1,56 +1,53 @@
 use anyhow::Result;
 use regex::Regex;
 use std::collections::HashMap;
+use std::fmt::Formatter;
 use structopt::StructOpt;
 use thiserror::Error;
 
 fn main() -> Result<()> {
     let opt = Opt::from_args();
-    let store = KV::new(JsonBackendStorage);
     //println!("{:?}", opt.command);
     let value = match opt.command {
-        Command::Get { key , serializer} => {
-            //let store = KV::new(serializer);
-            match serializer {
-                Serializer::BsonBackendStorage => {
-                    let store = KV::new(BsonBackendStorage);
-                    store.get(key)?
-                },
-                Serializer::JsonBackendStorage => {
-                    let store = KV::new(JsonBackendStorage);
-                    store.get(key)?
-                }
-            }
-            
-        },
-        Command::Set { key, value } => {
+        Command::Get { key, serializer } => {
+            let store = KV::new(serializer);
+            store.get(key)?
+        }
+        Command::Set { key, value, serializer } => {
+            let store = KV::new(serializer);
             store.set(key, value)?;
             "OK".into()
         }
-        Command::Clear => {
+        Command::Clear { serializer } => {
+            let store = KV::new(serializer);
             store.clear()?;
             "OK".into()
         }
-        Command::Del { key } => {
+        Command::Del { key, serializer } => {
+            let store = KV::new(serializer);
             store.delete(key)?;
             "OK".into()
         }
-        Command::Exists { key } => {
+        Command::Exists { key, serializer } => {
+            let store = KV::new(serializer);
             if store.exists(key)? {
                 "OK".into()
             } else {
                 "Not exists".into()
             }
         }
-        Command::Rename { key, newkey } => {
+        Command::Rename { key, newkey, serializer} => {
+            let store = KV::new(serializer);
             store.rename(key, newkey)?;
             "OK".into()
         }
-        Command::Append { key, value } => {
+        Command::Append { key, value, serializer } => {
+            let store = KV::new(serializer);
             store.append(key, value)?;
             "OK".into()
         }
-        Command::Keys { pattern } => {
+        Command::Keys { pattern, serializer } => {
+            let store = KV::new(serializer);
             let keys = store.get_keys(pattern)?;
             format!("Keys : {}", keys.join(", "))
         }
@@ -81,23 +78,6 @@ pub enum KVError {
 }
 
 #[derive(Debug, StructOpt)]
-enum Serializer {
-    JsonBackendStorage,
-    BsonBackendStorage
-}
-
-impl std::str::FromStr for Serializer{
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, String> {
-        match s{
-            "Json" => Ok(Serializer::JsonBackendStorage),
-            "Bson" => Ok(Serializer::BsonBackendStorage),
-            _ => Err("Serializer must be either Json or Bson".to_string())
-        }
-    }
-}
-
-#[derive(Debug, StructOpt)]
 #[structopt(name = "KV", about = "A key value store")]
 struct Opt {
     #[structopt(subcommand)]
@@ -112,7 +92,7 @@ enum Command {
         key: String,
 
         #[structopt(short = "s", long = "serializer", default_value = "Bson")]
-        serializer: Serializer
+        serializer: Box<dyn BackendStorage>,
     },
     Set {
         #[structopt(short = "k", long = "key")]
@@ -120,15 +100,27 @@ enum Command {
 
         #[structopt(short = "v", long = "value")]
         value: String,
+
+        #[structopt(short = "s", long = "serializer", default_value = "Bson")]
+        serializer: Box<dyn BackendStorage>,
     },
-    Clear,
+    Clear{
+        #[structopt(short = "s", long = "serializer", default_value = "Bson")]
+        serializer: Box<dyn BackendStorage>,
+    },
     Del {
         #[structopt(short = "k", long = "key")]
         key: String,
+
+        #[structopt(short = "s", long = "serializer", default_value = "Bson")]
+        serializer: Box<dyn BackendStorage>,
     },
     Exists {
         #[structopt(short = "k", long = "key")]
         key: String,
+
+        #[structopt(short = "s", long = "serializer", default_value = "Bson")]
+        serializer: Box<dyn BackendStorage>,
     },
     Rename {
         #[structopt(short = "k", long = "key")]
@@ -136,6 +128,9 @@ enum Command {
 
         #[structopt(short = "n", long = "newkey")]
         newkey: String,
+
+        #[structopt(short = "s", long = "serializer", default_value = "Bson")]
+        serializer: Box<dyn BackendStorage>,
     },
     Append {
         #[structopt(short = "k", long = "key")]
@@ -143,10 +138,16 @@ enum Command {
 
         #[structopt(short = "v", long = "value")]
         value: String,
+
+        #[structopt(short = "s", long = "serializer", default_value = "Bson")]
+        serializer: Box<dyn BackendStorage>,
     },
     Keys {
         #[structopt(short = "p", long = "pattern")]
         pattern: String,
+
+        #[structopt(short = "s", long = "serializer", default_value = "Bson")]
+        serializer: Box<dyn BackendStorage>,
     },
 }
 
@@ -156,6 +157,27 @@ pub trait BackendStorage {
     fn clear(&self) -> Result<(), KVError>;
 }
 
+impl std::str::FromStr for Box<dyn BackendStorage> {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "Json" => Ok(Box::new(JsonBackendStorage)),
+            "Bson" => Ok(Box::new(BsonBackendStorage)),
+            _ => Err("Serializer must be either Json or Bson".to_string()),
+        }
+    }
+}
+
+impl std::fmt::Debug for Box<dyn BackendStorage> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Storage")
+            // .field("Serializer", match &self {
+            //     JsonBackendStorage => "Json".to_string(),
+            //     BsonBackendStorage => "Bson".to_string()
+            // })
+            .finish()
+    }
+}
 pub struct JsonBackendStorage;
 
 impl BackendStorage for JsonBackendStorage {
@@ -211,15 +233,12 @@ impl BackendStorage for BsonBackendStorage {
     }
 }
 
-pub struct KV<T: BackendStorage> {
-    pub storage: T,
+pub struct KV {
+    pub storage: Box<dyn BackendStorage>,
 }
 
-impl<T> KV<T>
-where
-    T: BackendStorage,
-{
-    fn new(storage: T) -> Self {
+impl KV {
+    fn new(storage: Box<dyn BackendStorage>) -> Self {
         Self { storage }
     }
 
